@@ -174,6 +174,12 @@ svg.chart{width:100%;height:130px;display:block}
       </div>
     </div>
 
+    <div class="card">
+      <div class="between" style="margin-bottom:6px"><div class="label">Entradas do mês</div><div class="num pos mid" id="e-total">R$ 0,00</div></div>
+      <div id="e-lista"></div>
+      <button class="add" onclick="openEntrada()">+ Adicionar entrada</button>
+    </div>
+
     <div class="today">
       <div class="label" style="color:var(--gold)">Posso gastar hoje</div>
       <div class="v num" id="t-dia">R$ 0,00</div>
@@ -345,12 +351,17 @@ const CATS_DEF = [
 
 let S = {
   saldo:0, salario:0, diaSalario:5, cdi:14.90, varMes:0, pjMeses:12, pjCDI:true, pin:null,
-  cartoes:[], fixos:[], parcelas:[], compras:[], invest:[], cats:[], orcamentos:{}
+  cartoes:[], fixos:[], parcelas:[], compras:[], invest:[], cats:[], orcamentos:{}, entradas:[]
 };
 
 const KEY='grana:v1';
 function load(){ try{ const raw=localStorage.getItem(KEY); if(raw) S=Object.assign(S,JSON.parse(raw)); }catch(e){console.warn(e);} 
-  if(!S.cats||!S.cats.length) S.cats = CATS_DEF.map(c=>({...c})); }
+  if(!S.cats||!S.cats.length) S.cats = CATS_DEF.map(c=>({...c}));
+  if(!S.entradas) S.entradas=[];
+  // migra salário único (versões antigas) pra uma entrada, sem perder o valor
+  if(S.salario>0){ S.entradas.push({id:uid(),nome:'Salário',valor:S.salario,dia:S.diaSalario||5}); S.salario=0; }
+}
+const rendaMes = () => S.entradas.reduce((a,e)=>a+(e.valor||0),0);
 let saveT;
 function save(){ clearTimeout(saveT); saveT=setTimeout(()=>{ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){console.warn(e);} },150); }
 
@@ -403,7 +414,7 @@ const comprometido = id => faturaCartao(id)+S.parcelas.filter(p=>p.cartao===id).
 
 function projetar(meses){ const r=[]; let saldo=S.saldo; const tx=taxaMensal(100);
   for(let k=0;k<meses;k++){ let sai=S.varMes||0; S.fixos.forEach(f=>sai+=fixoNoMes(f,k)); S.parcelas.forEach(p=>sai+=parcelaNoMes(p,k));
-    const fluxo=S.salario-sai; if(S.pjCDI&&saldo>0) saldo+=saldo*tx; saldo+=fluxo;
+    const fluxo=rendaMes()-sai; if(S.pjCDI&&saldo>0) saldo+=saldo*tx; saldo+=fluxo;
     const d=new Date(hoje.getFullYear(),hoje.getMonth()+k,1); r.push({mes:MES[d.getMonth()],ano:d.getFullYear(),saldo,fluxo,sai}); }
   return r; }
 
@@ -423,6 +434,16 @@ function go(t){ document.querySelectorAll('.page').forEach(p=>p.classList.toggle
 
 function render(){ rHoje(); rFixos(); rCartoes(); rGastos(); rInvest(); rFuturo(); save(); }
 
+function rEntradas(){
+  document.getElementById('e-total').textContent = BRL(rendaMes());
+  const arr=[...S.entradas].sort((a,b)=>a.dia-b.dia);
+  document.getElementById('e-lista').innerHTML = arr.length? arr.map(e=>{
+    const caiu=e.dia<=hoje.getDate(); const dif=(e.dia-hoje.getDate()+31)%31;
+    const tag=caiu?'<span class="pos">já caiu</span>':(dif===0?'<span class="pos">hoje</span>':`em ${dif}d`);
+    return `<div class="item" onclick="openEntrada('${e.id}')"><div class="logo" style="background:rgba(74,222,155,.15);color:var(--green)">${(e.nome||'?')[0].toUpperCase()}</div><div><div class="nm">${e.nome}</div><div class="sb">dia ${e.dia} · ${tag}</div></div><div class="vl num pos">+ ${BRL(e.valor)}</div></div>`;
+  }).join('') : '<div class="empty">Nenhuma entrada ainda.<br>Adicione cada dinheiro que cai no mês.</div>';
+}
+
 function rHoje(){
   document.getElementById('hoje-data').textContent = hoje.toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'});
   document.getElementById('h-saldo').textContent = BRL(S.saldo);
@@ -430,18 +451,25 @@ function rHoje(){
   document.getElementById('h-inv').textContent = BRL(inv);
   document.getElementById('h-invd').textContent = inv? `≈ ${BRL(inv*taxaMensal(100))} /mês` : 'nada aplicado';
   document.getElementById('h-patri').textContent = BRL(S.saldo+inv-dividaTotal());
+  const renda=rendaMes();
   const total=fixosMes()+parcelasMes()+comprasMes();
   document.getElementById('h-total').textContent='− '+BRL(total);
-  document.getElementById('h-sub').textContent = S.salario? `Salário de ${BRL(S.salario)} todo dia ${S.diaSalario}`:'Cadastre seu salário em Ajustes';
+  const nE=S.entradas.length;
+  document.getElementById('h-sub').textContent = renda? `${nE} ${nE>1?'entradas somam':'entrada de'} ${BRL(renda)} no mês` : 'Adicione suas entradas abaixo';
+
+  // entradas do mês
+  rEntradas();
 
   // quanto posso gastar hoje
-  const livre = S.salario - fixosMes() - parcelasMes() - comprasMes();
+  const jaCaiu = S.entradas.filter(e=>e.dia<=hoje.getDate()).reduce((a,e)=>a+e.valor,0);
+  const aReceber = renda - jaCaiu;
+  const livre = renda - fixosMes() - parcelasMes() - comprasMes();
   const dr = diasRestantes();
   const porDia = livre>0? livre/dr : 0;
   document.getElementById('t-dia').textContent = BRL(porDia);
   document.getElementById('t-sub').textContent = livre>0
-    ? `${BRL(livre)} livres ÷ ${dr} ${dr>1?'dias':'dia'} até o fim do mês`
-    : (S.salario? 'Você já passou do orçamento livre do mês' : 'Cadastre salário e gastos pra calcular');
+    ? `${BRL(livre)} livres ÷ ${dr} ${dr>1?'dias':'dia'} · ainda entram ${BRL(aReceber)}`
+    : (renda? 'Você já passou do orçamento livre do mês' : 'Cadastre entradas e gastos pra calcular');
 
   const bd=[['Assinaturas e contas',fixosMes(),'var(--gold)'],['Parcelas',parcelasMes(),'var(--violet)'],['Compras do mês',comprasMes(),'var(--red)']];
   document.getElementById('h-breakdown').innerHTML = bd.map(([n,v,c])=>{ const p=total?(v/total*100):0;
@@ -607,12 +635,9 @@ const optsCartao=sel=>`<option value="">Nenhum / débito</option>`+S.cartoes.map
 
 function openCfg(){
   openSheet(`<h2>Ajustes</h2>
-    <div class="field"><label class="label" for="s-sal">Salário mensal</label><input id="s-sal" class="num" type="number" inputmode="decimal" value="${S.salario||''}"></div>
-    <div class="grid2">
-      <div class="field"><label class="label" for="s-dia">Cai todo dia</label><input id="s-dia" class="num" type="number" inputmode="numeric" value="${S.diaSalario}"></div>
-      <div class="field"><label class="label" for="s-cdi">CDI ao ano (%)</label><input id="s-cdi" class="num" type="number" step="0.05" inputmode="decimal" value="${S.cdi}"></div>
-    </div>
-    <button class="btn" onclick="S.salario=N('s-sal');S.diaSalario=parseInt(V('s-dia'))||5;S.cdi=N('s-cdi')||14.9;document.getElementById('cdi-t').value=S.cdi;closeSheet();render()">Salvar</button>
+    <div class="field"><label class="label" for="s-cdi">CDI ao ano (%)</label><input id="s-cdi" class="num" type="number" step="0.05" inputmode="decimal" value="${S.cdi}"></div>
+    <button class="btn" onclick="S.cdi=N('s-cdi')||14.9;document.getElementById('cdi-t').value=S.cdi;closeSheet();render()">Salvar</button>
+    <div class="tt" style="margin-top:8px">Suas entradas (salário, clientes, YouTube...) ficam na tela <b>Hoje</b>, em "Entradas do mês".</div>
     <div class="sep"></div>
     <label class="sw ${S.pin?'on':''}" id="cfg-pin" style="justify-content:space-between"><span style="font-size:14px">🔒 Bloqueio por PIN</span><i></i></label>
     <div class="sep"></div>
@@ -624,6 +649,21 @@ function openCfg(){
   document.getElementById('cfg-pin').addEventListener('click',togglePin);
 }
 function openSaldo(){ openSheet(`<h2>Saldo atual</h2><div class="field"><label class="label" for="s-sd">Quanto você tem na conta agora</label><input id="s-sd" class="num" type="number" inputmode="decimal" value="${S.saldo||''}" autofocus></div><button class="btn" onclick="S.saldo=N('s-sd');closeSheet();render()">Salvar</button>`); }
+
+function openEntrada(id){
+  const e=S.entradas.find(x=>x.id===id)||{nome:'',valor:'',dia:5};
+  openSheet(`<h2>${id?'Editar':'Nova'} entrada</h2>
+    <div class="field"><label class="label" for="s-en">De onde vem</label><input id="s-en" value="${e.nome}" placeholder="Cliente X, YouTube, Salário..."></div>
+    <div class="grid2">
+      <div class="field"><label class="label" for="s-ev">Valor</label><input id="s-ev" class="num" type="number" inputmode="decimal" value="${e.valor}"></div>
+      <div class="field"><label class="label" for="s-ed">Dia do mês</label><input id="s-ed" class="num" type="number" inputmode="numeric" value="${e.dia}"></div>
+    </div>
+    <button class="btn" onclick="salvarEntrada('${id||''}')">Salvar</button>
+    ${id?`<button class="btn danger" style="margin-top:8px" onclick="S.entradas=S.entradas.filter(x=>x.id!=='${id}');closeSheet();render()">Excluir</button>`:''}
+    <div class="tt" style="margin-top:10px">Cada entrada é o dinheiro que cai naquele dia, todo mês. Adicione quantas quiser — é assim que o app calcula quanto ainda falta entrar e quanto dá pra gastar por dia.</div>`);
+}
+function salvarEntrada(id){ const o={id:id||uid(),nome:V('s-en')||'Entrada',valor:N('s-ev'),dia:Math.min(Math.max(parseInt(V('s-ed'))||1,1),31)};
+  const i=S.entradas.findIndex(x=>x.id===id); i>=0?S.entradas[i]=o:S.entradas.push(o); closeSheet(); render(); }
 
 function openFixo(id){
   const f=S.fixos.find(x=>x.id===id)||{nome:'',dom:'',valor:'',dia:1,ciclo:'mensal',mesAnual:1,tipo:'apps',cartao:''};
